@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    tags: '*'
+
+jobs:
+  build_linux:
+    name: Build Linux
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:3.12.0
+
+    steps:
+      - name: Clone Repository
+        uses: actions/checkout@v2
+        with:
+          persist-credentials: false
+
+      - name: Install Dependencies
+        run: |
+          apk add --no-cache \
+          bash \
+          build-base \
+          clang \
+          cmake \
+          git \
+          llvm10-dev \
+          python3 \
+          xz
+
+      - name: Set Environment Variables
+        id: set_env_vars
+        run: |
+          export BUILD_PATH="${GITHUB_WORKSPACE}/build"
+          export LD64_TARGET_BASE_PATH="${BUILD_PATH}/cctools"
+          export COMPILER_FLAGS="-static ${BUILD_PATH}/apple-libtapi/build/projects/libtapi/lib/Core/CMakeFiles/tapiCore.dir/FakeSymbols.cpp.o -Wl,--unresolved-symbols=ignore-in-object-files"
+          export LD64_SOURCE_PATH="${GITHUB_WORKSPACE}/cctools/ld64/src/ld"
+
+          echo ::set-output name=BUILD_PATH::"$BUILD_PATH"
+          echo ::set-output name=LD64_TARGET_BASE_PATH::"${LD64_TARGET_BASE_PATH}"
+          echo ::set-output name=COMPILER_FLAGS::"${COMPILER_FLAGS}"
+          echo ::set-output name=LD64_SOURCE_PATH::"${LD64_SOURCE_PATH}"
+
+      - name: Expose Environment Variables Globally
+        uses: allenevans/set-env@v1.1.0
+        with:
+          BUILD_PATH: ${{ steps.set_env_vars.outputs.BUILD_PATH }}
+          LD64_TARGET_BASE_PATH: ${{ steps.set_env_vars.outputs.LD64_TARGET_BASE_PATH }}
+          COMPILER_FLAGS: ${{ steps.set_env_vars.outputs.COMPILER_FLAGS }}
+          LD64_SOURCE_PATH: ${{ steps.set_env_vars.outputs.LD64_SOURCE_PATH }}
+
+      - name: Build libtapi
+        run: ./tools/ci/build_static_libtapi.sh
+
+      - name: Build cctools
+        run: ./tools/ci/build_cctools.sh
+
+      - name: Archive ld64
+        run: |
+          export LD64_VERSION=$("${LD64_TARGET_BASE_PATH}/bin/ld" -v 2>&1 | head -n 1 | cut -d : -f 3)
+          echo ::set-output name=LD64_VERSION::"$LD64_VERSION"
+          tar Jcf "${LD64_VERSION}-linux-x86_64.tar.xz" -C "${LD64_TARGET_BASE_PATH}/bin" ld
+
+      - name: Extract Version
+        id: version
+        run: echo ::set-output name=VERSION::${GITHUB_REF#refs/tags/}
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: ${{ steps.version.outputs.VERSION }}
+          draft: true
+          files: ld64-*.tar.xz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
